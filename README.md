@@ -136,6 +136,27 @@ npm run coin-toss -- fund 1
 `deploy` also accepts an optional separate testnet account ID for the operator.
 Initialization and deployment are submitted in one transaction.
 
+## GitHub Pages
+
+The web app is static and can be hosted on GitHub Pages. In the repository's
+**Settings → Pages**, select **GitHub Actions** as the publishing source.
+The workflow in `.github/workflows/pages.yml` tests and builds the app, then
+publishes only `dist/` on pushes to `main` or a manual workflow run. It uses
+GitHub's built-in token and requires no NEAR signing keys or custom secrets.
+
+The workflow sets `VITE_BASE_PATH` from GitHub Pages metadata so JavaScript,
+coin assets, wallet callbacks, and receipt links work under `/flip-it/`. Local
+development and other hosts continue to use `/` by default. To preview the
+project-path build locally:
+
+```sh
+VITE_BASE_PATH=/flip-it/ npm run build
+VITE_BASE_PATH=/flip-it/ npm run preview -- --port 5183
+```
+
+Open `http://127.0.0.1:5183/flip-it/`. GitHub Pages serves the frontend; bets,
+settlement, and payouts continue to use the existing NEAR testnet contract.
+
 ## Upgrading the pre-fee testnet deployment
 
 Build and test the new WASM first. Temporarily pause new bets from the operator
