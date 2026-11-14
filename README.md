@@ -1,13 +1,16 @@
 # Coin Toss
 
 A NEAR testnet coin-toss game. Anyone can top up the vault, place a wager on heads
-or tails, or submit a proof for a pending bet. A win pays 2× the wager, including
-the original stake. Each flip uses a single bit of a hash of verified drand
-quicknet randomness. The contract offers even-money odds before network fees.
+or tails, or submit a proof for a pending bet. New wins pay 1.98× the wager, including the original stake: 1% of the gross
+2× winning payout stays in the bank. Outcomes remain 50/50. Each flip uses a
+single bit of a hash of verified drand quicknet randomness. Network fees apply
+separately. Bets accepted before the fee upgrade retain their original 2× payout.
 
 - Contract: `coin-toss-mvp-20261105.testnet`
 - Operator: `coin-toss-mvp-admin-20261105.testnet`
 - [Deployment transaction](https://testnet.nearblocks.io/txns/FJDWcyPX9cpt2JmARyJ293SNUi4ShsTagMehc6bQEhin)
+- Fee upgrade: bets **39 onward** use the 1% winning payout fee; bets 0–38 retain
+  their original payout. [Upgrade transaction](https://testnet.nearblocks.io/txns/4yAZeaPj3YRg3GqPEfWvigdVJ8Mrcg29ND17VT9urFdy).
 - [Contract on NearBlocks](https://testnet.nearblocks.io/address/coin-toss-mvp-20261105.testnet)
 
 ## Web app
@@ -45,7 +48,9 @@ npm run coin-toss -- receipt 0
 npm run coin-toss -- verify 0
 ```
 
-Bet 0 is a worked example. Its 0.01 NEAR stake won and paid 0.02 NEAR.
+Bet 0 is a legacy worked example. Its 0.01 NEAR stake won and paid 0.02 NEAR.
+Bet 39 demonstrates the new policy: a 0.01 NEAR win paid 0.0198 NEAR and
+retained a 0.0002 NEAR fee in the bank. Both receipts can be independently verified.
 [Settlement](https://testnet.nearblocks.io/txns/2BhvsWz9kXTjVfKPgNzxGJmP2uBoRcuKDWJGWicUERB6) ·
 [Claim](https://testnet.nearblocks.io/txns/AkNaBUTkq3q83pehDUbibLTf43UehJ326WCnWx8fxD65)
 
@@ -78,7 +83,8 @@ claim. Bank and receipt amounts are in yoctoNEAR.
 
 ## Contract behavior
 
-- New wagers are capped at 1% of the free bank, with a 0.001 NEAR minimum. The
+- New wagers are capped at 1% of the free bank, with a 0.001 NEAR contract minimum
+  (the UI uses 0.01 NEAR steps). The
   contract also caps house exposure when accepting new bets at 10% of house
   equity. Accepting a wager reserves both the player's stake and the house's
   matching amount before any result is known.
@@ -90,6 +96,14 @@ claim. Bank and receipt amounts are in yoctoNEAR.
 - A proof can be submitted until 24 hours after the scheduled round. If the
   bet is still pending then, anyone can call `refund` and the bettor can claim
   the stake. A delayed submission never selects a different round.
+- A win retains 1% of its gross 2× payout in free bankroll and sends the remaining
+  1.98× to the bettor. The fee rounds down to whole yoctoNEAR. Losses and refunds
+  incur no winning fee. The full 2× is conservatively reserved until settlement.
+- `bank` exposes `win_fee_bps` and `fee_start_bet_id`; receipts include
+  `win_payout`, `win_fee_bps`, and the actual `fee`. The proof verifier checks the
+  payout against the on-chain policy and preserves legacy receipts.
+- `place_bet` requires `expected_payout` so a stale client cannot silently accept
+  changed payout terms.
 - Settlement sends wins directly to the account that placed the bet. A failed
   payout becomes claimable by that account. The operator may pause new bets and
   withdraw free bankroll, which is kept separate from reserved payouts.
@@ -121,3 +135,14 @@ npm run coin-toss -- fund 1
 
 `deploy` also accepts an optional separate testnet account ID for the operator.
 Initialization and deployment are submitted in one transaction.
+
+## Upgrading the pre-fee testnet deployment
+
+Build and test the new WASM first. Temporarily pause new bets from the operator
+account, then sign `npm run coin-toss -- upgrade` from the contract account.
+The CLI batches code deployment and the private `migrate` call in one transaction.
+Migration preserves bank balances, reservations, pending bets, claims, and
+in-flight transfers, and records the next bet ID as the fee activation boundary.
+Earlier bets retain 2× payouts without rewriting their stored records. Publish
+the updated UI, then resume bets from the operator account. Migration is intended
+for the original pre-fee state and cannot be replayed on the upgraded state.

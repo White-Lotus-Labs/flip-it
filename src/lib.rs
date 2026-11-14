@@ -2,12 +2,15 @@ mod beacon;
 
 use near_sdk::json_types::{U64, U128};
 use near_sdk::store::LookupMap;
-use near_sdk::{AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue, env, near, require};
+use near_sdk::{
+    AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue, env, near, require,
+};
 
 const MIN_BET: u128 = 1_000_000_000_000_000_000_000; // 0.001 NEAR
 const ROUND_LEAD: u64 = 6;
 const PROOF_WINDOW: u64 = 86_400;
 const CALLBACK_GAS: Gas = Gas::from_tgas(12);
+const WIN_FEE_BPS: u16 = 100; // 1% of the gross winning payout, retained in free bankroll.
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
@@ -53,15 +56,23 @@ impl Bet {
         beacon::round_time(self.round) + PROOF_WINDOW
     }
 
-    fn payout(&self) -> u128 {
+    fn win_payout(&self, fee_bps: u16) -> u128 {
+        let gross = self.stake * 2;
+        // Divide first to avoid overflow; the fee rounds down in the bettor's favor.
+        let fee =
+            gross / 10_000 * u128::from(fee_bps) + gross % 10_000 * u128::from(fee_bps) / 10_000;
+        gross - fee
+    }
+
+    fn payout(&self, fee_bps: u16) -> u128 {
         match self.outcome {
-            Outcome::Won => self.stake * 2,
+            Outcome::Won => self.win_payout(fee_bps),
             Outcome::Refunded => self.stake,
             _ => 0,
         }
     }
 
-    fn receipt(&self, bet_id: U64) -> BetReceipt {
+    fn receipt(&self, bet_id: U64, fee_bps: u16) -> BetReceipt {
         let settled = matches!(self.outcome, Outcome::Won | Outcome::Lost);
         let result = match self.outcome {
             Outcome::Won => Some(self.side),
@@ -79,7 +90,14 @@ impl Bet {
             expires_at: U64(self.expires_at()),
             outcome: self.outcome,
             result,
-            payout: U128(self.payout()),
+            payout: U128(self.payout(fee_bps)),
+            win_payout: U128(self.win_payout(fee_bps)),
+            win_fee_bps: fee_bps,
+            fee: U128(if self.outcome == Outcome::Won {
+                self.stake * 2 - self.win_payout(fee_bps)
+            } else {
+                0
+            }),
             claim: self.claim,
             signature: settled.then(|| hex::encode(self.signature)),
         }
@@ -98,6 +116,9 @@ pub struct BetReceipt {
     outcome: Outcome,
     result: Option<Side>,
     payout: U128,
+    win_payout: U128,
+    win_fee_bps: u16,
+    fee: U128,
     claim: Claim,
     signature: Option<String>,
 }
@@ -114,6 +135,21 @@ pub struct BankView {
     bet_count: U64,
     paused: bool,
     beacon_chain_hash: &'static str,
+    win_fee_bps: u16,
+    fee_start_bet_id: U64,
+}
+
+// Exact pre-fee state layout. Existing Bet values retain their original Borsh layout.
+#[near(serializers = [borsh])]
+struct LegacyCoinToss {
+    owner: AccountId,
+    free: u128,
+    pending_payouts: u128,
+    claimable: u128,
+    in_flight: u128,
+    next_bet_id: u64,
+    paused: bool,
+    bets: LookupMap<u64, Bet>,
 }
 
 #[near(contract_state)]
@@ -127,6 +163,7 @@ pub struct CoinToss {
     next_bet_id: u64,
     paused: bool,
     bets: LookupMap<u64, Bet>,
+    fee_start_bet_id: u64,
 }
 
 #[near]
@@ -143,6 +180,24 @@ impl CoinToss {
             next_bet_id: 0,
             paused: false,
             bets: LookupMap::new(b"bets".as_slice()),
+            fee_start_bet_id: 0,
+        }
+    }
+
+    #[init(ignore_state)]
+    #[private]
+    pub fn migrate() -> Self {
+        let old: LegacyCoinToss = env::state_read().expect("Expected the pre-fee contract state");
+        Self {
+            owner: old.owner,
+            free: old.free,
+            pending_payouts: old.pending_payouts,
+            claimable: old.claimable,
+            in_flight: old.in_flight,
+            fee_start_bet_id: old.next_bet_id,
+            next_bet_id: old.next_bet_id,
+            paused: old.paused,
+            bets: old.bets,
         }
     }
 
@@ -166,15 +221,19 @@ impl CoinToss {
             bet_count: U64(self.next_bet_id),
             paused: self.paused,
             beacon_chain_hash: beacon::CHAIN_HASH,
+            win_fee_bps: WIN_FEE_BPS,
+            fee_start_bet_id: U64(self.fee_start_bet_id),
         }
     }
 
     pub fn get_bet(&self, bet_id: U64) -> Option<BetReceipt> {
-        self.bets.get(&bet_id.0).map(|bet| bet.receipt(bet_id))
+        self.bets
+            .get(&bet_id.0)
+            .map(|bet| bet.receipt(bet_id, self.bet_fee_bps(bet_id)))
     }
 
     #[payable]
-    pub fn place_bet(&mut self, side: Side) -> BetReceipt {
+    pub fn place_bet(&mut self, side: Side, expected_payout: Option<U128>) -> BetReceipt {
         require!(!self.paused, "New bets are paused");
         let stake = env::attached_deposit().as_yoctonear();
         require!(stake >= MIN_BET, "Bet is below the minimum");
@@ -192,7 +251,11 @@ impl CoinToss {
             claim: Claim::Unavailable,
             signature: [0; 48],
         };
-        let receipt = bet.receipt(bet_id);
+        require!(
+            expected_payout.map(|payout| payout.0) == Some(bet.win_payout(WIN_FEE_BPS)),
+            "Winning payout changed. Refresh the app to accept the 1% winning payout fee"
+        );
+        let receipt = bet.receipt(bet_id, WIN_FEE_BPS);
         self.next_bet_id += 1;
         self.free -= stake;
         self.pending_payouts += stake * 2;
@@ -214,6 +277,7 @@ impl CoinToss {
     }
 
     pub fn settle_bet(&mut self, bet_id: U64, signature: String) -> PromiseOrValue<BetReceipt> {
+        let fee_bps = self.bet_fee_bps(bet_id);
         let bet = self
             .bets
             .get_mut(&bet_id.0)
@@ -245,7 +309,9 @@ impl CoinToss {
         if result == bet.side {
             bet.outcome = Outcome::Won;
             bet.claim = Claim::Available;
-            self.claimable += bet.payout();
+            let payout = bet.payout(fee_bps);
+            self.free += bet.stake * 2 - payout;
+            self.claimable += payout;
             self.send_payout(bet_id)
                 .then(
                     Self::ext(env::current_account_id())
@@ -256,11 +322,12 @@ impl CoinToss {
         } else {
             bet.outcome = Outcome::Lost;
             self.free += bet.stake * 2;
-            PromiseOrValue::Value(bet.receipt(bet_id))
+            PromiseOrValue::Value(bet.receipt(bet_id, fee_bps))
         }
     }
 
     pub fn refund_expired_bet(&mut self, bet_id: U64) -> BetReceipt {
+        let fee_bps = self.bet_fee_bps(bet_id);
         let bet = self
             .bets
             .get_mut(&bet_id.0)
@@ -275,7 +342,7 @@ impl CoinToss {
         self.claimable += bet.stake;
         bet.outcome = Outcome::Refunded;
         bet.claim = Claim::Available;
-        bet.receipt(bet_id)
+        bet.receipt(bet_id, fee_bps)
     }
 
     pub fn claim(&mut self, bet_id: U64) -> Promise {
@@ -303,12 +370,13 @@ impl CoinToss {
 
     #[private]
     pub fn on_claim(&mut self, bet_id: U64) -> bool {
+        let fee_bps = self.bet_fee_bps(bet_id);
         let bet = self
             .bets
             .get_mut(&bet_id.0)
             .unwrap_or_else(|| env::panic_str("Unknown bet"));
         require!(bet.claim == Claim::InFlight, "No claim transfer in flight");
-        let amount = bet.payout();
+        let amount = bet.payout(fee_bps);
         self.in_flight -= amount;
         let success = env::promise_result_checked(0, 0).is_ok();
         if success {
@@ -354,13 +422,22 @@ impl CoinToss {
 }
 
 impl CoinToss {
+    fn bet_fee_bps(&self, bet_id: U64) -> u16 {
+        if bet_id.0 < self.fee_start_bet_id {
+            0
+        } else {
+            WIN_FEE_BPS
+        }
+    }
+
     fn send_payout(&mut self, bet_id: U64) -> Promise {
+        let fee_bps = self.bet_fee_bps(bet_id);
         let bet = self
             .bets
             .get_mut(&bet_id.0)
             .unwrap_or_else(|| env::panic_str("Unknown bet"));
         require!(bet.claim == Claim::Available, "There is no payout to claim");
-        let amount = bet.payout();
+        let amount = bet.payout(fee_bps);
         bet.claim = Claim::InFlight;
         self.claimable -= amount;
         self.in_flight += amount;
@@ -417,7 +494,7 @@ mod tests {
         } else {
             Side::Tails
         };
-        let bet = game.place_bet(side);
+        let bet = game.place_bet(side, Some(U128(MIN_BET * 2 - MIN_BET * 2 / 100)));
 
         context
             .predecessor_account_id(accounts(3))
@@ -431,19 +508,50 @@ mod tests {
         assert!(get_created_receipts().iter().any(|receipt| {
             receipt.receiver_id == bet.player
                 && receipt.actions.iter().any(|action| {
-                    matches!(action, MockAction::Transfer { deposit, .. } if deposit.as_yoctonear() == 2 * MIN_BET)
+                    matches!(action, MockAction::Transfer { deposit, .. } if deposit.as_yoctonear() == 2 * MIN_BET - 2 * MIN_BET / 100)
                 })
         }));
-        assert_eq!(game.in_flight, 2 * MIN_BET);
+        assert_eq!(game.in_flight, 2 * MIN_BET - 2 * MIN_BET / 100);
+        assert_eq!(
+            game.free,
+            NearToken::from_near(1).as_yoctonear() - MIN_BET + 2 * MIN_BET / 100
+        );
         assert_eq!(game.pending_payouts, 0);
 
         context.predecessor_account_id(accounts(0));
-        testing_env!(context.build(), test_vm_config(), RuntimeFeesConfig::test(), Default::default(), vec![PromiseResult::Failed]);
+        testing_env!(
+            context.build(),
+            test_vm_config(),
+            RuntimeFeesConfig::test(),
+            Default::default(),
+            vec![PromiseResult::Failed]
+        );
         let receipt = game.on_settlement_payout(bet.bet_id);
         assert!(receipt.outcome == Outcome::Won);
         assert!(receipt.claim == Claim::Available);
-        assert_eq!(game.claimable, 2 * MIN_BET);
+        assert_eq!(game.claimable, 2 * MIN_BET - 2 * MIN_BET / 100);
+        assert_eq!(receipt.fee.0, 2 * MIN_BET / 100);
+        assert_eq!(receipt.win_fee_bps, 100);
         assert_eq!(game.in_flight, 0);
+
+        let retained_bank = game.free;
+        context.predecessor_account_id(bet.player.clone());
+        testing_env!(context.build());
+        game.claim(bet.bet_id).detach();
+        assert_eq!(game.in_flight, receipt.payout.0);
+        context.predecessor_account_id(accounts(0));
+        testing_env!(
+            context.build(),
+            test_vm_config(),
+            RuntimeFeesConfig::test(),
+            Default::default(),
+            vec![PromiseResult::Successful(vec![])]
+        );
+        assert!(game.on_claim(bet.bet_id));
+        assert_eq!(game.free, retained_bank); // Retrying a failed payout never collects the fee again.
+        assert_eq!(game.claimable, 0);
+        assert_eq!(game.in_flight, 0);
+        assert!(game.get_bet(bet.bet_id).unwrap().claim == Claim::Paid);
     }
 
     #[test]
@@ -462,7 +570,7 @@ mod tests {
 
         context.attached_deposit(NearToken::from_yoctonear(MIN_BET));
         testing_env!(context.build());
-        let bet = game.place_bet(Side::Heads);
+        let bet = game.place_bet(Side::Heads, Some(U128(MIN_BET * 2 - MIN_BET * 2 / 100)));
         assert_eq!(game.pending_payouts, 2 * MIN_BET);
         assert_eq!(game.free, NearToken::from_near(1).as_yoctonear() - MIN_BET);
         assert!(bet.round_at.0 > now() + ROUND_LEAD);
@@ -473,6 +581,7 @@ mod tests {
         testing_env!(context.build());
         let refund = game.refund_expired_bet(bet.bet_id);
         assert_eq!(refund.payout.0, MIN_BET);
+        assert_eq!(refund.fee.0, 0);
         assert_eq!(game.pending_payouts, 0);
         assert_eq!(game.free, NearToken::from_near(1).as_yoctonear());
 
@@ -506,5 +615,169 @@ mod tests {
         assert_eq!(game.claimable, 0);
         assert_eq!(game.in_flight, 0);
         assert!(game.get_bet(bet.bet_id).unwrap().claim == Claim::Paid);
+    }
+
+    #[test]
+    fn legacy_migration_keeps_pending_wins_claims_and_in_flight_payouts_at_two_x() {
+        let signature = "898a7998602631a38324d381fb225128656a3796320d69f19b4259ab4c6c3f52aa44a4a410054c49c1713c8db5d03fd2";
+        let round = 33_705_244;
+        let mut proof = [0; 48];
+        hex::decode_to_slice(signature, &mut proof).unwrap();
+        let side = if beacon::result_bit(accounts(0).as_str(), 0, &proof) == 0 {
+            Side::Heads
+        } else {
+            Side::Tails
+        };
+        let mut context = VMContextBuilder::new();
+        context
+            .current_account_id(accounts(0))
+            .predecessor_account_id(accounts(0))
+            .account_balance(NearToken::from_near(10))
+            .block_timestamp(beacon::round_time(round) * 1_000_000_000);
+        testing_env!(context.build());
+        let mut bets = LookupMap::new(b"b".as_slice());
+        for (id, outcome, claim) in [
+            (0, Outcome::Pending, Claim::Unavailable),
+            (1, Outcome::Won, Claim::Available),
+            (2, Outcome::Won, Claim::InFlight),
+        ] {
+            bets.insert(
+                id,
+                Bet {
+                    player: accounts(1),
+                    side,
+                    stake: MIN_BET,
+                    round,
+                    outcome,
+                    claim,
+                    signature: proof,
+                },
+            );
+        }
+        bets.flush();
+        let free = NearToken::from_near(1).as_yoctonear();
+        env::state_write(&LegacyCoinToss {
+            owner: accounts(2),
+            free,
+            pending_payouts: 2 * MIN_BET,
+            claimable: 2 * MIN_BET,
+            in_flight: 2 * MIN_BET,
+            next_bet_id: 3,
+            paused: true,
+            bets,
+        });
+        let mut game = CoinToss::migrate();
+        assert_eq!(game.fee_start_bet_id, 3);
+        assert_eq!(game.free, free);
+        assert_eq!(game.claimable, 2 * MIN_BET);
+        assert_eq!(game.in_flight, 2 * MIN_BET);
+        assert!(game.paused);
+        for id in 0..3 {
+            let receipt = game.get_bet(U64(id)).unwrap();
+            assert_eq!(receipt.win_fee_bps, 0);
+            assert_eq!(receipt.win_payout.0, 2 * MIN_BET);
+            assert_eq!(receipt.fee.0, 0);
+        }
+        let PromiseOrValue::Promise(payout) = game.settle_bet(U64(0), signature.into()) else {
+            panic!("Expected legacy payout")
+        };
+        payout.detach();
+        assert_eq!(game.in_flight, 4 * MIN_BET);
+        assert_eq!(game.free, free); // No fee collected from a pending legacy win.
+        assert_eq!(game.get_bet(U64(0)).unwrap().payout.0, 2 * MIN_BET);
+        testing_env!(
+            context.build(),
+            test_vm_config(),
+            RuntimeFeesConfig::test(),
+            Default::default(),
+            vec![PromiseResult::Successful(vec![])]
+        );
+        assert!(game.on_claim(U64(2)));
+        assert_eq!(game.in_flight, 2 * MIN_BET);
+        context.predecessor_account_id(accounts(1));
+        testing_env!(context.build());
+        game.claim(U64(1)).detach();
+        assert_eq!(game.claimable, 0);
+        assert_eq!(game.in_flight, 4 * MIN_BET);
+        game.paused = false;
+        context.attached_deposit(NearToken::from_yoctonear(MIN_BET));
+        testing_env!(context.build());
+        let new_bet = game.place_bet(Side::Heads, Some(U128(2 * MIN_BET - 2 * MIN_BET / 100)));
+        assert_eq!(new_bet.bet_id.0, 3);
+        assert_eq!(new_bet.win_fee_bps, WIN_FEE_BPS);
+        assert_eq!(new_bet.win_payout.0, 2 * MIN_BET - 2 * MIN_BET / 100);
+    }
+
+    #[test]
+    fn losing_bet_collects_no_winning_fee_and_releases_the_gross_reserve() {
+        let signature = "898a7998602631a38324d381fb225128656a3796320d69f19b4259ab4c6c3f52aa44a4a410054c49c1713c8db5d03fd2";
+        let round_at = beacon::round_time(33_705_244);
+        let mut proof = [0; 48];
+        hex::decode_to_slice(signature, &mut proof).unwrap();
+        let mut context = VMContextBuilder::new();
+        context
+            .current_account_id(accounts(0))
+            .predecessor_account_id(accounts(1))
+            .account_balance(NearToken::from_near(10))
+            .block_timestamp((round_at - ROUND_LEAD - 1) * 1_000_000_000)
+            .attached_deposit(NearToken::from_near(1));
+        testing_env!(context.build());
+        let mut game = CoinToss::new(accounts(2));
+        game.fund_bank();
+        let side = if beacon::result_bit(accounts(0).as_str(), 0, &proof) == 0 {
+            Side::Tails
+        } else {
+            Side::Heads
+        };
+        context.attached_deposit(NearToken::from_yoctonear(MIN_BET));
+        testing_env!(context.build());
+        let bet = game.place_bet(side, Some(U128(2 * MIN_BET - 2 * MIN_BET / 100)));
+        context
+            .attached_deposit(NearToken::from_yoctonear(0))
+            .block_timestamp(round_at * 1_000_000_000);
+        testing_env!(context.build());
+        let PromiseOrValue::Value(receipt) = game.settle_bet(bet.bet_id, signature.into()) else {
+            panic!("A loss has no payout")
+        };
+        assert!(receipt.outcome == Outcome::Lost);
+        assert_eq!(receipt.payout.0, 0);
+        assert_eq!(receipt.fee.0, 0);
+        assert_eq!(game.free, NearToken::from_near(1).as_yoctonear() + MIN_BET);
+        assert_eq!(game.pending_payouts, 0);
+        assert_eq!(game.in_flight, 0);
+    }
+
+    #[test]
+    fn fee_rounding_never_overcharges_the_bettor() {
+        for stake in [49, 50, 51, MIN_BET, u128::MAX / 2] {
+            let bet = Bet {
+                player: accounts(1),
+                side: Side::Heads,
+                stake,
+                round: 0,
+                outcome: Outcome::Won,
+                claim: Claim::Available,
+                signature: [0; 48],
+            };
+            assert_eq!(bet.win_payout(WIN_FEE_BPS), stake * 2 - stake * 2 / 100);
+            assert_eq!(bet.win_payout(0), stake * 2);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Winning payout changed")]
+    fn stale_two_x_quotes_are_rejected_before_a_bet_is_recorded() {
+        let mut context = VMContextBuilder::new();
+        context
+            .current_account_id(accounts(0))
+            .account_balance(NearToken::from_near(10))
+            .block_timestamp((beacon::GENESIS + 100) * 1_000_000_000)
+            .attached_deposit(NearToken::from_near(1));
+        testing_env!(context.build());
+        let mut game = CoinToss::new(accounts(2));
+        game.fund_bank();
+        context.attached_deposit(NearToken::from_yoctonear(MIN_BET));
+        testing_env!(context.build());
+        game.place_bet(Side::Heads, Some(U128(2 * MIN_BET)));
     }
 }

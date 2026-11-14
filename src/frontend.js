@@ -1,22 +1,30 @@
-import { CONTRACT, EXPLORER, formatNear, parseNear, getBank, getBalance, getBet, getBetPage, getProof, isTestnetAccount, parseBetId } from './near.ts'
+import { CONTRACT, EXPLORER, formatNear, formatNearDisplay, floorNearCents, NEAR_CENT, winningPayout, parseNear, getBank, getBalance, getBet, getBetPage, getProof, isTestnetAccount, parseBetId } from './near.ts'
 import { connectWallet as connectNearWallet, disconnectWallet, watchWalletAccount } from './wallet.ts'
 import { transact, readIntent, recoverTransaction, clearIntent, lastBet, openBetUrl } from './game.ts'
 
 /* Live contract state. Numeric values here are for presentation only. */
 const S = {
-  state: 'idle', bankroll: 0, bank: null, wallet: null, bet: 0.001,
+  state: 'idle', bankroll: 0, bank: null, wallet: null, bet: 0.01,
   pick: 'heads', last: null, active: null, proof: null, busy: false, bankError: '',
 };
 const $ = (id) => document.getElementById(id);
-const num = (n) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 6 });
+const num = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (n) => `${num(n)} NEAR`;
+const payoutAmount = value => {
+  const label = formatNearDisplay(value);
+  return label.startsWith('<') || parseNear(label) === BigInt(value) ? label : `≈${label}`;
+};
 const amountOf = (value) => Number(formatNear(value));
-const minBet = () => amountOf(S.bank?.min_bet ?? '1000000000000000000000');
+const minStake = () => {
+  const minimum = BigInt(S.bank?.min_bet ?? NEAR_CENT);
+  return (minimum + NEAR_CENT - 1n) / NEAR_CENT * NEAR_CENT;
+};
+const minBet = () => amountOf(minStake());
 function maxStake() {
   if (!S.bank) return 0n;
   const cap = BigInt(S.bank.max_bet);
   const spendable = S.wallet ? BigInt(S.wallet.amount) - 10n ** 22n : cap;
-  return spendable < 0n ? 0n : spendable < cap ? spendable : cap;
+  return floorNearCents(spendable < 0n ? 0n : spendable < cap ? spendable : cap);
 }
 const maxBet = () => amountOf(maxStake());
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -26,7 +34,7 @@ const explain = (error) => error instanceof Error ? error.message : 'Could not c
 /* Balances. `shown` is what is on screen, which lags the real value while a change animates. */
 const shown = { bank: S.bankroll, wallet: 0 };
 const sides = {
-  bank:   { box: 'bank',   amt: 'bankroll',      sub: 'cap',      rest: () => S.bank ? `Max bid: ${formatNear(S.bank.max_bet)} NEAR` : 'Loading bank…', token: 0, busy: false },
+  bank:   { box: 'bank',   amt: 'bankroll',      sub: 'cap',      rest: () => S.bank ? `Max bid: ${formatNearDisplay(floorNearCents(S.bank.max_bet))} NEAR` : 'Loading bank…', token: 0, busy: false },
   wallet: { box: 'wallet', amt: 'walletBalance', sub: 'walletId', rest: () => (S.wallet ? S.wallet.id : ''),                        token: 0, busy: false },
 };
 
@@ -101,7 +109,7 @@ function render() {
   $('reveal').textContent = S.busy ? 'Check your wallet…' : expired ? 'Refund stake' : S.wallet ? 'Reveal result' : 'Connect to reveal';
   $('lockPanel').classList.toggle('revealing', revealing);
   $('lockTitle').textContent = revealing ? 'Revealing' : expired ? 'Refund available' : S.proof ? 'Ready to reveal' : 'In the air';
-  $('locked').textContent = bet ? `${formatNear(bet.stake)} NEAR on ${bet.side}. ${expired ? 'The proof window expired.' : S.proof ? 'Reveal and any winnings go straight to the bettor.' : 'Waiting for the committed drand round.'}` : '';
+  $('locked').textContent = bet ? `${formatNearDisplay(bet.stake)} NEAR on ${bet.side}. ${expired ? 'The proof window expired.' : S.proof ? 'Reveal and any winnings go straight to the bettor.' : 'Waiting for the committed drand round.'}` : '';
   $('retryClaim').hidden = !bet || bet.claim !== 'available' || bet.player !== S.wallet?.id;
   $('retryClaim').disabled = S.busy || !!readIntent();
   $('verify').hidden = !bet?.signature;
@@ -113,13 +121,14 @@ function render() {
 
   if (S.last) {
     const bet = S.active;
-    $('outcome').textContent = bet.outcome === 'refunded' ? 'Refunded' : S.last.win ? 'Doubled' : 'Zero';
+    $('outcome').textContent = bet.outcome === 'refunded' ? 'Refunded' : S.last.win ? 'You won' : 'Zero';
     $('outcome').classList.toggle('win', S.last.win);
     const landed = bet.result === 'heads' ? 'Heads' : 'Tails';
+    $('outcomeNote').title = `${formatNear(bet.payout)} NEAR payout · ${formatNear(bet.fee)} NEAR winning fee`;
     $('outcomeNote').textContent = bet.outcome === 'refunded'
-      ? `${formatNear(bet.payout)} NEAR available to claim.`
-      : bet.outcome === 'lost' ? `${landed}. Your ${formatNear(bet.stake)} NEAR joined the bank.`
-      : `${landed}. ${formatNear(bet.payout)} NEAR ${bet.claim === 'paid' ? 'paid to the bettor’s wallet.' : bet.claim === 'in_flight' ? 'is being sent.' : 'is available to claim.'}`;
+      ? `${payoutAmount(bet.payout)} NEAR available to claim.`
+      : bet.outcome === 'lost' ? `${landed}. Your ${formatNearDisplay(bet.stake)} NEAR joined the bank.`
+      : `${landed}. ${payoutAmount(bet.payout)} NEAR ${bet.claim === 'paid' ? 'paid to the bettor’s wallet.' : bet.claim === 'in_flight' ? 'is being sent.' : 'is available to claim.'}${bet.win_fee_bps ? ' After the 1% winning payout fee.' : ' Legacy bet · no winning fee.'}`;
   }
 }
 
@@ -129,7 +138,7 @@ function readBet() {
 }
 
 function sizeAmount() {
-  // At least three characters wide (every 0.5 step fits), so the row — and the stepper beside it — stays put while you step.
+  // Keep the amount and its stepper steady as the number changes.
   $('amount').style.width = `${Math.max(3, $('amount').value.length) * 1.02 + 0.2}ch`;
 }
 
@@ -139,11 +148,13 @@ function validate() {
   if (S.bankError) error = S.bankError;
   else if (!S.bank) error = 'Loading the live bank…';
   else if (S.bank.paused) error = 'New flips are paused.';
+  else if (S.bank.win_fee_bps !== 100) error = 'The payout update is in progress. Try again shortly.';
   else if (stake === null) error = 'Enter a NEAR amount.';
-  else if (stake < BigInt(S.bank.min_bet)) error = `Minimum bid is ${formatNear(S.bank.min_bet)} NEAR.`;
-  else if (stake > maxStake()) error = `Your current max bid is ${formatNear(maxStake())} NEAR, with a little NEAR left for gas.`;
+  else if (stake % NEAR_CENT !== 0n) error = 'Use up to two decimal places.';
+  else if (stake < minStake()) error = `Minimum bid is ${formatNearDisplay(minStake())} NEAR.`;
+  else if (stake > maxStake()) error = `Your current max bid is ${formatNearDisplay(maxStake())} NEAR, with a little NEAR left for gas.`;
   $('hint').classList.toggle('error', !!error);
-  $('hint').textContent = error || `Lands ${S.pick} and ${formatNear(stake * 2n)} NEAR comes back.`;
+  $('hint').textContent = error || `Lands ${S.pick} and ${payoutAmount(winningPayout(stake, S.bank.win_fee_bps))} NEAR comes back.`;
   $('flip').disabled = !!error || !S.wallet || S.busy || !!readIntent();
   $('flip').textContent = S.busy ? 'Check your wallet…' : 'Flip';
   $('stepUp').disabled = S.busy || !(readBet() < maxBet());
@@ -351,7 +362,7 @@ $('share').onclick = async () => {
     clearTimeout(shareReset);
     shareReset = setTimeout(() => { $('shareLabel').textContent = 'Share'; }, 2000);
   };
-  const data = { title: 'Flip Fun', text: 'Fair 2x or zero on NEAR.', url: location.href };
+  const data = { title: 'Flip Fun', text: '50/50 coin flips. Win 2× on NEAR before a 1% winning payout fee.', url: location.href };
   try {
     if (navigator.share && /^https?:/.test(location.href)) { await navigator.share(data); say('Shared'); }
     else { await navigator.clipboard.writeText(location.href); say('Link copied'); }
@@ -384,18 +395,23 @@ $('disconnect').onclick = async () => {
   catch (error) { message(explain(error)); }
 };
 
-$('max').onclick = () => { $('amount').value = maxBet(); sizeAmount(); validate(); $('amount').focus(); sfx.blipUp(); };
+$('max').onclick = () => { $('amount').value = maxBet().toFixed(2); sizeAmount(); validate(); $('amount').focus(); sfx.blipUp(); };
 $('amount').oninput = () => { sizeAmount(); validate(); sfx.tick(); };
+$('amount').onblur = () => {
+  const value = parseNear($('amount').value.trim());
+  if (value !== null && value % NEAR_CENT === 0n) $('amount').value = formatNearDisplay(value);
+  sizeAmount(); validate();
+};
 
-// Stepping the stake: snaps to the next 0.5 NEAR mark in that direction, clamped to the allowed range.
-const STEP = 0.001;
+// Step in hundredths of a NEAR, within the exact on-chain limit.
+const STEP = 0.01;
 function stepBet(dir) {
   const cur = readBet();
   const base = Number.isFinite(cur) ? cur : minBet();
   let next = dir > 0 ? (Math.floor(base / STEP + 1e-9) + 1) * STEP : (Math.ceil(base / STEP - 1e-9) - 1) * STEP;
-  next = Math.round(Math.min(maxBet(), Math.max(minBet(), next)) * 1000) / 1000;
+  next = Math.round(Math.min(maxBet(), Math.max(minBet(), next)) * 100) / 100;
   if (next === cur) return false;
-  $('amount').value = next;
+  $('amount').value = next.toFixed(2);
   sizeAmount(); validate();
   dir > 0 ? sfx.blipUp() : sfx.tick();
   return true;
@@ -444,6 +460,17 @@ sideBtns.forEach((b) => {
 });
 
 // About: a modal dialog; Escape, Close or a click outside the panel closes it.
+$('winFeeInfo').onclick = () => {
+  const button = $('winFeeInfo');
+  button.setAttribute('aria-expanded', String(button.getAttribute('aria-expanded') !== 'true'));
+};
+document.addEventListener('click', event => {
+  if (!$('winFeeInfo').contains(event.target)) $('winFeeInfo').setAttribute('aria-expanded', 'false');
+});
+$('winFeeInfo').addEventListener('keydown', event => {
+  if (event.key === 'Escape') { $('winFeeInfo').setAttribute('aria-expanded', 'false'); $('winFeeInfo').blur(); }
+});
+
 $('aboutBtn').onclick = () => { $('about').showModal(); $('aboutClose').focus(); };
 $('aboutClose').onclick = () => $('about').close();
 $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('about').close(); });   // a click on the backdrop lands on the dialog itself
@@ -494,7 +521,7 @@ $('betForm').onsubmit = async event => {
   event.preventDefault();
   if (S.state !== 'bet' || S.busy || !validate()) return;
   const stake = parseNear($('amount').value.trim());
-  await send('place_bet', { side: S.pick }, stake.toString());
+  await send('place_bet', { side: S.pick, expected_payout: winningPayout(stake, S.bank.win_fee_bps).toString() }, stake.toString());
 };
 $('reveal').onclick = async () => {
   const bet = S.active;
@@ -525,7 +552,7 @@ function openPledge(open) {
   $('pledgeConnect').hidden = !!S.wallet;
   $('pledgeForm').hidden = !S.wallet;
   if (!S.wallet) { $('pledgeConnectBtn').focus(); return; }
-  $('pledgeAmt').value = '0.1';
+  $('pledgeAmt').value = '0.10';
   validatePledge();
   $('pledgeAmt').focus();
 }
@@ -541,7 +568,7 @@ $('pledgeBox').onsubmit = async event => {
 };
 $('again').onclick = () => {
   S.active = null; S.last = null; S.proof = null; openBetUrl(null); message();
-  $('amount').value = String(Math.max(minBet(), Math.min(S.bet, maxBet())));
+  $('amount').value = Math.max(minBet(), Math.min(S.bet, maxBet())).toFixed(2);
   setState(S.wallet ? 'bet' : 'connect');
 };
 
@@ -621,7 +648,7 @@ function renderHistory() {
   for (const bet of bets) {
     const row = document.createElement('button'); row.className = 'historyRow'; row.type = 'button';
     const claim = bet.claim === 'paid' ? ' · Paid' : bet.claim === 'available' ? ' · Claimable' : bet.claim === 'in_flight' ? ' · Sending' : '';
-    row.textContent = `#${bet.bet_id} · ${bet.side} · ${formatNear(bet.stake)} NEAR · ${bet.outcome}${claim}`;
+    row.textContent = `#${bet.bet_id} · ${bet.side} · ${formatNearDisplay(bet.stake)} NEAR · ${bet.outcome}${claim}`;
     const player = document.createElement('small'); player.textContent = bet.player; row.append(player);
     row.onclick = async () => { $('historyDialog').close(); await openBet(bet.bet_id); };
     list.append(row);
@@ -656,7 +683,7 @@ $('verify').onclick = async () => {
 };
 
 async function boot() {
-  $('amount').value = '0.001';
+  $('amount').value = '0.01';
   $('contractLink').href = `${EXPLORER}/address/${CONTRACT}`;
   $('recoverHash').value = readIntent()?.hash ?? '';
   watchWalletAccount(async id => {
@@ -1537,37 +1564,37 @@ Promise.all([
       cross.visible = on < 0.98;
     });
 
-    /* Wallet: a billfold seen from the front — the back panel showing above the body, and a clasp
-       with a single green stud, the one spot of colour. */
-    const backPanel = puff(rounded([[-0.9, 0.1], [-0.9, 0.8], [0.72, 0.8], [0.72, 0.1]], 0.2));
-    backPanel.position.z = -0.24;
-    const body = puff(rounded([[-1, -0.78], [1, -0.78], [1, 0.5], [-1, 0.5]], 0.22));
-    const clasp = puff(rounded([[0.36, -0.4], [1.14, -0.4], [1.14, 0.12], [0.36, 0.12]], 0.2));
-    clasp.position.z = 0.26;
+    /* Wallet: one clean glass silhouette — the body and its clasp tab are a single shape, so no glass layers
+       overlap and muddy each other — with a green stud on the tab and a few coins lying in the bottom. */
+    const body = puff(rounded([
+      [-1, -0.72], [0.94, -0.72], [0.94, -0.36], [1.14, -0.36], [1.14, 0.18], [0.94, 0.18], [0.94, 0.56], [-1, 0.56],
+    ], 0.2));
     const stud = new THREE.Mesh(
-      new THREE.SphereGeometry(0.105, 20, 14),
-      new THREE.MeshPhysicalMaterial({ color: NEAR_GREEN, metalness: 1, roughness: 0.22 }),
+      new THREE.SphereGeometry(0.1, 24, 16),
+      new THREE.MeshPhysicalMaterial({ color: NEAR_GREEN, metalness: 1, roughness: 0.2 }),
     );
-    stud.position.set(0.66, -0.14, 0.5);
-    // A few small coins inside the glass, the same as in the jar, settled in the bottom of the body.
+    stud.position.set(1.04, -0.09, 0.3);
     const coinMat = new THREE.MeshPhysicalMaterial({ color: NEAR_GREEN, metalness: 1, roughness: 0.24 });
     const loose = [
-      [-0.62, -0.5, -0.06, 0.5, 0.2], [-0.24, -0.56, 0.05, -0.35, -0.3], [0.14, -0.52, -0.08, 0.25, 0.4],
-      [-0.42, -0.24, 0.1, -0.6, 0.15], [-0.02, -0.28, -0.12, 0.7, -0.2], [0.34, -0.3, 0.08, -0.2, 0.55],
+      [-0.62, -0.46, -0.04, 0.5, 0.2], [-0.24, -0.52, 0.06, -0.35, -0.3], [0.16, -0.48, -0.07, 0.25, 0.4],
+      [0.5, -0.5, 0.04, -0.5, 0.2],
     ].map(([x, y, z, rx, ry], i) => {
       const c = new THREE.Mesh(smallCoin, coinMat);
-      c.scale.setScalar(0.22);
+      c.scale.setScalar(0.2);
       c.position.set(x, y, z);
       c.rotation.set(rx, ry, i * 1.3);
       c.userData = { y, rx, phase: i * 1.9, freq: 10 + i };
       return c;
     });
+    const walletShape = new THREE.Group();
+    walletShape.add(body, stud, ...loose);
+    walletShape.position.y = 0.08;
     let rattle = 0;
-    const wallet = icon($('walletArt'), [backPanel, body, clasp, stud, ...loose], (t, dt) => {
+    const wallet = icon($('walletArt'), [walletShape], (t, dt) => {
       rattle *= Math.pow(0.04, dt);              // the coins jump about inside, then settle
       loose.forEach((c) => {
         const hop = Math.abs(Math.sin(t * c.userData.freq + c.userData.phase)) * rattle;
-        c.position.y = c.userData.y + hop * 0.22;
+        c.position.y = c.userData.y + hop * 0.2;
         c.rotation.x = c.userData.rx + hop * 1.2;
       });
     }, () => { wallet.press(); rattle = 1; });

@@ -19,6 +19,9 @@ export type Bet = {
   outcome: 'pending' | 'won' | 'lost' | 'refunded'
   result: Side | null
   payout: string
+  win_payout: string
+  win_fee_bps: number
+  fee: string
   claim: 'unavailable' | 'available' | 'in_flight' | 'paid'
   signature: string | null
 }
@@ -29,6 +32,8 @@ export type Bank = {
   max_bet: string
   bet_count: string
   paused: boolean
+  win_fee_bps: number
+  fee_start_bet_id: string
 }
 export type Method = 'place_bet' | 'settle_bet' | 'claim' | 'refund_expired_bet' | 'fund_bank'
 export type Intent = {
@@ -65,6 +70,30 @@ export function formatNear(value: string | bigint) {
   const digits = BigInt(value).toString().padStart(25, '0')
   const fraction = digits.slice(-24).replace(/0+$/, '')
   return digits.slice(0, -24) + (fraction ? '.' + fraction : '')
+}
+
+export const NEAR_CENT = ONE_NEAR / 100n
+
+export function floorNearCents(value: string | bigint) {
+  return BigInt(value) / NEAR_CENT * NEAR_CENT
+}
+
+// Keep exact yoctoNEAR values for transactions; round only the visible amount.
+export function formatNearDisplay(value: string | bigint) {
+  const amount = BigInt(value)
+  if (amount > 0n && amount < NEAR_CENT) return '<0.01'
+  const cents = (amount + NEAR_CENT / 2n) / NEAR_CENT
+  return `${cents / 100n}.${(cents % 100n).toString().padStart(2, '0')}`
+}
+
+export function winningPayout(stake: string | bigint, feeBps: number) {
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 10_000) throw new Error('Invalid winning fee.')
+  const gross = BigInt(stake) * 2n
+  return gross - gross * BigInt(feeBps) / 10_000n
+}
+
+export function betFeeBps(id: string, bank: Pick<Bank, 'win_fee_bps' | 'fee_start_bet_id'>) {
+  return BigInt(id) < BigInt(bank.fee_start_bet_id) ? 0 : bank.win_fee_bps
 }
 
 export function parseBetId(value: string | null) {
@@ -183,6 +212,7 @@ export function returnedBetId(value: unknown, signer?: string) {
 export function transactionFailure(tx: RpcTx) {
   const raw = JSON.stringify(tx.status.Failure)
   if (raw.includes('current bankroll limit')) return 'The max bet changed before this wager landed. Check the updated limit.'
+  if (raw.includes('Winning payout changed')) return 'Refresh the app to accept the updated winning payout and fee before placing a bet.'
   if (raw.includes('New bets are paused')) return 'New bets are paused. Existing bets can still be settled and claimed.'
   if (raw.includes('already resolved')) return 'This bet was already resolved. Its receipt has been refreshed.'
   if (raw.includes('no payout to claim')) return 'There is no payout available to claim. Check the latest receipt.'

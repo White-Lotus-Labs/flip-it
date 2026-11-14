@@ -156,6 +156,7 @@ function hash(...buffers) {
 
 async function verify(id) {
   const bet = await view('get_bet', { bet_id: id })
+  const bank = await view('bank')
   if (!bet?.signature) throw new Error('Bet has no verified beacon signature yet')
   const idBytes = Buffer.alloc(8)
   idBytes.writeBigUInt64BE(BigInt(id))
@@ -169,11 +170,16 @@ async function verify(id) {
   const digest = hash(Buffer.from('coin-toss:v1\0'), Buffer.from(contract), Buffer.from([0]), idBytes, randomness)
   const result = digest[0] & 1 ? 'tails' : 'heads'
   const outcome = result === bet.side ? 'won' : 'lost'
-  const payout = outcome === 'won' ? 2n * BigInt(bet.stake) : 0n
+  const feeBps = BigInt(id) < BigInt(bank.fee_start_bet_id) ? 0 : bank.win_fee_bps
+  const gross = 2n * BigInt(bet.stake)
+  const winPayout = gross - gross * BigInt(feeBps) / 10_000n
+  const payout = outcome === 'won' ? winPayout : 0n
+  const fee = outcome === 'won' ? gross - winPayout : 0n
+  if (bet.win_fee_bps !== feeBps || bet.win_payout !== winPayout.toString() || bet.fee !== fee.toString()) throw new Error('Receipt fee differs from on-chain payout policy')
   if (result !== bet.result || outcome !== bet.outcome || payout.toString() !== bet.payout) {
     throw new Error('Recomputed result does not match the on-chain receipt')
   }
-  return { bet_id: id, round: bet.round, signature: bet.signature, result, outcome, payout: bet.payout }
+  return { bet_id: id, round: bet.round, signature: bet.signature, result, outcome, payout: bet.payout, fee: bet.fee, win_fee_bps: feeBps }
 }
 
 async function main() {
@@ -182,11 +188,27 @@ async function main() {
   switch (command) {
     case 'account': return createAccount(first)
     case 'deploy': return deploy(first)
+    case 'upgrade': {
+      if (accountId !== contract) throw new Error('Upgrade from the contract account')
+      if (!(await view('bank')).paused) throw new Error('Pause new bets before upgrading')
+      const account = await nearAccount(true)
+      const tx = await account.signAndSendTransaction({ receiverId: contract, actions: [
+        transactions.deployContract(await readFile(wasmPath)),
+        transactions.functionCall('migrate', {}, gas, 0n),
+      ] })
+      if (!tx.status || !('SuccessValue' in tx.status)) throw new Error('Contract upgrade failed')
+      return output({ tx: tx.transaction.hash, bank: await view('bank') })
+    }
     case 'bank': return output(await view('bank'))
     case 'fund': return output(await call('fund_bank', {}, nearAmount(first)))
     case 'bet':
       if (first !== 'heads' && first !== 'tails') throw new Error('Choose heads or tails')
-      return output(await call('place_bet', { side: first }, nearAmount(second)))
+      {
+        const bank = await view('bank')
+        const gross = BigInt(nearAmount(second)) * 2n
+        const expected_payout = (gross - gross * BigInt(bank.win_fee_bps) / 10_000n).toString()
+        return output(await call('place_bet', { side: first, expected_payout }, nearAmount(second)))
+      }
     case 'receipt': return output(await view('get_bet', { bet_id: betId(first) }))
     case 'settle': return output(await settle(betId(first)))
     case 'verify': return output(await verify(betId(first)))
@@ -196,7 +218,7 @@ async function main() {
     case 'pause':
     case 'resume': return output(await call('set_paused', { paused: command === 'pause' }))
     default:
-      throw new Error('Usage: npm run coin-toss -- account|deploy|bank|fund|bet|receipt|settle|verify|refund|claim|withdraw|pause|resume [args]')
+      throw new Error('Usage: npm run coin-toss -- account|deploy|upgrade|bank|fund|bet|receipt|settle|verify|refund|claim|withdraw|pause|resume [args]')
   }
 }
 
