@@ -1,4 +1,4 @@
-# Coin Toss
+# Flip It
 
 A NEAR testnet coin-toss game. Anyone can top up the vault, place a wager on heads
 or tails, or submit a proof for a pending bet. New wins pay 1.98× the wager, including the original stake: 1% of the gross
@@ -15,7 +15,7 @@ separately. Bets accepted before the fee upgrade retain their original 2× payou
 
 ## Web app
 
-The repository’s Flip Fun frontend is the app entry point at `index.html`. Its
+The repository’s Flip It frontend is the app entry point at `index.html`. Its
 Three.js coin, jar, wallet artwork, and synthesized sound are connected to the
 NEAR testnet contract. The wallet chooser offers Meteor, Intear, and NEAR CLI.
 

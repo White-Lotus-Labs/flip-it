@@ -362,7 +362,7 @@ $('share').onclick = async () => {
     clearTimeout(shareReset);
     shareReset = setTimeout(() => { $('shareLabel').textContent = 'Share'; }, 2000);
   };
-  const data = { title: 'Flip Fun', text: '2x or zero on NEAR. Flip a coin: win and your stake doubles before a 1% winning payout fee, lose and it joins the bank.', url: location.href };
+  const data = { title: 'Flip It', text: '2x or zero on NEAR. Flip a coin: win and your stake doubles before a 1% winning payout fee, lose and it joins the bank.', url: location.href };
   try {
     if (navigator.share && /^https?:/.test(location.href)) { await navigator.share(data); say('Shared'); }
     else { await navigator.clipboard.writeText(location.href); say('Link copied'); }
