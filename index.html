@@ -3,20 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Flip Fun — 50/50 Coin Flips on NEAR</title>
-<meta name="description" content="50/50 coin flips on NEAR. Win 2× before a 1% winning payout fee that stays in the bank.">
+<title>Flip Fun — 2x or Zero on NEAR</title>
+<meta name="description" content="2x or zero on NEAR. Flip a coin: win and your stake doubles, lose and it joins the bank.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Flip Fun">
-<meta property="og:title" content="Flip Fun — 50/50 Coin Flips on NEAR">
-<meta property="og:description" content="50/50 coin flips on NEAR. Win 2× before a 1% winning payout fee that stays in the bank.">
-<meta property="og:image" content="og.png">
+<meta property="og:title" content="Flip Fun — 2x or Zero on NEAR">
+<meta property="og:description" content="2x or zero on NEAR. Flip a coin: win and your stake doubles, lose and it joins the bank.">
+<meta property="og:image" content="%BASE_URL%OG.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="A green 3D NEAR coin on black">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Flip Fun — 50/50 Coin Flips on NEAR">
-<meta name="twitter:description" content="50/50 coin flips on NEAR. Win 2× before a 1% winning payout fee that stays in the bank.">
-<meta name="twitter:image" content="og.png"><link rel="preconnect" href="https://fonts.googleapis.com">
+<meta name="twitter:title" content="Flip Fun — 2x or Zero on NEAR">
+<meta name="twitter:description" content="2x or zero on NEAR. Flip a coin: win and your stake doubles, lose and it joins the bank.">
+<meta name="twitter:image" content="%BASE_URL%OG.png"><link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=BBH+Bartle&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -285,8 +285,9 @@
 <div class="bottomLinks"><button type="button" class="linkbtn" id="historyBtn">History</button><button type="button" class="linkbtn" id="aboutBtn" aria-haspopup="dialog">About</button><a id="contractLink" class="linkbtn" target="_blank" rel="noreferrer">Contract ↗</a></div>
 <dialog id="about" aria-labelledby="aboutTitle">
   <h2 id="aboutTitle" class="title">Flip Fun</h2>
-  <p>Flip Fun is a coin-flip game running on NEAR testnet. Each bet uses a future drand round verified on NEAR. Network fees apply.</p>
-  <p>Every flip has a 50% chance to win. A win pays 2× before a 1% fee on that winning payout, retained in the bank. Your net return is 1.98×, including your original stake. A loss adds your stake to the bank. Older bets keep their original 2× payout.</p>
+  <p>Flip Fun is a self-sustaining coin-flip primitive on NEAR testnet. No tilted odds, just luck and fun. Each bet uses a future drand round verified on NEAR. Network fees apply.</p>
+  <p>Win, and you get double your stake back before a 1% winning payout fee. Lose, and your stake goes into the bank, which pays future winners.</p>
+  <p>The 1% fee on winning payouts stays in the bank, keeping its balance playable for the players who come next. Your net return is 1.98×, including your original stake. Older bets keep their original 2× payout.</p>
   <p>A single bid is capped at 1% of the free bank with payouts reserved before a bet is accepted, and anyone can pledge to the bank to raise the limit for everyone.</p>
   <p class="dim">Built for the NEAR hackathon, for the fun of it.</p>
   <button type="button" class="chip" id="aboutClose">Close</button>
@@ -302,7 +303,7 @@
   <!-- 1. start -->
   <section class="panel" data-show="idle igniting">
     <div class="intro">
-      <h1 class="hero title">50/50. Win 2x<br>on NEAR.</h1>
+      <h1 class="hero title">2x or zero<br>on NEAR.</h1>
     </div>
     <button class="btn" id="start">Start</button>
   </section>

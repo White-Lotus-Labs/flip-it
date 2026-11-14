@@ -154,7 +154,7 @@ function validate() {
   else if (stake < minStake()) error = `Minimum bid is ${formatNearDisplay(minStake())} NEAR.`;
   else if (stake > maxStake()) error = `Your current max bid is ${formatNearDisplay(maxStake())} NEAR, with a little NEAR left for gas.`;
   $('hint').classList.toggle('error', !!error);
-  $('hint').textContent = error || `Lands ${S.pick} and ${payoutAmount(winningPayout(stake, S.bank.win_fee_bps))} NEAR comes back.`;
+  $('hint').textContent = error || `Lands ${S.pick} and ${payoutAmount(winningPayout(stake, S.bank.win_fee_bps))} NEAR comes back. Otherwise ${fmt(amountOf(stake))} joins the bank.`;
   $('flip').disabled = !!error || !S.wallet || S.busy || !!readIntent();
   $('flip').textContent = S.busy ? 'Check your wallet…' : 'Flip';
   $('stepUp').disabled = S.busy || !(readBet() < maxBet());
@@ -362,7 +362,7 @@ $('share').onclick = async () => {
     clearTimeout(shareReset);
     shareReset = setTimeout(() => { $('shareLabel').textContent = 'Share'; }, 2000);
   };
-  const data = { title: 'Flip Fun', text: '50/50 coin flips. Win 2× on NEAR before a 1% winning payout fee.', url: location.href };
+  const data = { title: 'Flip Fun', text: '2x or zero on NEAR. Flip a coin: win and your stake doubles before a 1% winning payout fee, lose and it joins the bank.', url: location.href };
   try {
     if (navigator.share && /^https?:/.test(location.href)) { await navigator.share(data); say('Shared'); }
     else { await navigator.clipboard.writeText(location.href); say('Link copied'); }
