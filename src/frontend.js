@@ -459,19 +459,20 @@ sideBtns.forEach((b) => {
   });
 });
 
-// About: a modal dialog; Escape, Close or a click outside the panel closes it.
-$('winFeeInfo').onclick = () => {
-  const button = $('winFeeInfo');
-  button.setAttribute('aria-expanded', String(button.getAttribute('aria-expanded') !== 'true'));
-};
-document.addEventListener('click', event => {
-  if (!$('winFeeInfo').contains(event.target)) $('winFeeInfo').setAttribute('aria-expanded', 'false');
-});
-$('winFeeInfo').addEventListener('keydown', event => {
-  if (event.key === 'Escape') { $('winFeeInfo').setAttribute('aria-expanded', 'false'); $('winFeeInfo').blur(); }
-});
+// Tappable information buttons also work without a hover-capable pointer.
+for (const id of ['winFeeInfo', 'pledgeInfo']) {
+  const button = $(id);
+  button.onclick = () => button.setAttribute('aria-expanded', String(button.getAttribute('aria-expanded') !== 'true'));
+  document.addEventListener('click', event => {
+    if (!button.contains(event.target)) button.setAttribute('aria-expanded', 'false');
+  });
+  button.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { button.setAttribute('aria-expanded', 'false'); button.blur(); }
+  });
+}
 
-$('aboutBtn').onclick = () => { $('about').showModal(); $('aboutClose').focus(); };
+// Open long dialogs at their heading instead of scrolling to the Close button.
+$('aboutBtn').onclick = () => { $('about').showModal(); $('aboutTitle').focus(); $('about').scrollTop = 0; };
 $('aboutClose').onclick = () => $('about').close();
 $('about').addEventListener('click', (e) => { if (e.target === $('about')) $('about').close(); });   // a click on the backdrop lands on the dialog itself
 

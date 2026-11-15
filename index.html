@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Flip It — 2x or Zero on NEAR</title>
 <meta name="description" content="2x or zero on NEAR. Flip a coin: win and your stake doubles, lose and it joins the bank.">
 <meta property="og:type" content="website">
@@ -236,6 +236,58 @@
   .historyTools [aria-pressed="true"] { border-color: var(--green); color: var(--green); }
   #historyClose { margin-top: 16px; }
   @media (max-width: 600px) { .bottomLinks { bottom: 18px; gap: 10px; } .liveMessage { padding-inline: 16px; } }
+
+  /* Let phone content scroll above the footer instead of underneath it. */
+  @media (max-width: 640px), (max-width: 960px) and (max-height: 500px) {
+    body { display: flex; flex-direction: column; height: auto; min-height: 100svh; }
+    main { flex: 1 0 auto; min-height: 0; padding: 210px 16px 32px; justify-content: center; }
+    #stage, main:has([data-show="result"]:not([hidden])) #stage { height: clamp(140px, 26svh, 240px); min-height: 0; flex-shrink: 0; }
+    .panel { min-height: 0; gap: 16px; }
+    .hero { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+    .hero.sm { font-size: clamp(20px, 4.8vw, 30px); text-wrap: balance; }
+    .panel[data-show="result"] .hero { font-size: clamp(24px, 7vw, 32px); }
+    .intro .hero { font-size: clamp(18px, 4.5vw, 24px); }
+    .note, .lede { max-width: 100%; overflow-wrap: anywhere; }
+    .corner { width: min(160px, calc(50vw - 16px)); }
+    .corner .amt { font-size: clamp(10px, 2.6vw, 12px); overflow: hidden; text-overflow: ellipsis; }
+    .betRow { width: min(100%, 340px); }
+    .sides, .stakeRow { width: 100%; }
+    .side { flex: 1; min-width: 0; padding-inline: 12px; font-size: 12px; }
+    .stakeRow { gap: 8px; }
+    .amount { flex: 1; min-width: 0; }
+    .amount .field { flex: 1; min-width: 0; flex-direction: column; align-items: center; padding-inline: 8px; gap: 2px; }
+    .amount input { min-width: 0; max-width: 100%; font-size: 22px; flex: 0 1 auto; }
+    .amount .unit { font-size: 8px; }
+    .step { flex: 0 0 44px; width: 44px; }
+    #max { padding-inline: 12px; }
+    #recovery { width: 100%; }
+    #bank .tip .bubble { position: fixed; top: 212px; left: 16px; right: 16px; width: auto; transform: translateY(-4px); }
+    #bank .tip:hover .bubble, #bank .tip:focus-visible .bubble, #bank .tip[aria-expanded="true"] .bubble { transform: none; }
+    #about, #historyDialog { max-height: calc(100dvh - 32px); padding: 22px 20px; overflow-y: auto; overscroll-behavior: contain; }
+    #about > * { flex-shrink: 0; }
+    #aboutTitle:focus { outline: none; }
+    #historyDialog h2 { font-size: 18px; overflow-wrap: anywhere; }
+    .historyTools { gap: 10px; }
+    .appFooter { position: relative; z-index: 3; display: grid; grid-template-columns: 48px minmax(0, 1fr) 64px; align-items: end; gap: 12px;
+      padding: 12px max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+    .appFooter .iconbtn { position: static; width: 100%; }
+    .appFooter .iconbtn .art { width: 44px; height: 44px; margin-bottom: 0; }
+    .appFooter .iconbtn .lbl { font-size: 10px; }
+    .bottomLinks { position: static; transform: none; justify-content: center; align-items: center; flex-wrap: wrap; gap: 0 12px; }
+    .bottomLinks .linkbtn { display: inline-flex; align-items: center; min-height: 44px; border: 0; padding: 0 2px; white-space: nowrap; font-size: 10px; }
+    .bottomLinks .linkbtn::after { content: none; }
+    .receiptActions { gap: 16px; }
+  }
+  @media (max-width: 960px) and (max-height: 500px) and (min-width: 500px) {
+    main { padding: 72px 144px 24px; }
+    #stage, main:has([data-show="result"]:not([hidden])) #stage { height: 120px; }
+    .logo { top: 14px; font-size: 12px; }
+    .corner { top: 42px; width: 136px; }
+    .corner .amt { font-size: 10px; letter-spacing: -.02em; }
+    #bank { left: 8px; }
+    #wallet { right: 8px; }
+    .corner .art { width: 72px; height: 72px; }
+  }
 </style>
 
 </head>
@@ -254,7 +306,7 @@
   <div class="foot">
     <span class="pledgeWrap">
       <button type="button" class="linkbtn" id="pledge">Pledge</button>
-      <button type="button" class="tip" aria-label="What is a pledge?" aria-describedby="pledgeTip">?<span class="bubble" role="tooltip" id="pledgeTip">A contribution to the operator’s bankroll. It creates no shares or redemption rights. The operator may withdraw free bankroll.</span></button>
+      <button type="button" class="tip" id="pledgeInfo" aria-label="What is a pledge?" aria-describedby="pledgeTip" aria-expanded="false">?<span class="bubble" role="tooltip" id="pledgeTip">A contribution to the operator’s bankroll. It creates no shares or redemption rights. The operator may withdraw free bankroll.</span></button>
     </span>
   </div>
   <form id="pledgeBox" hidden>
@@ -280,11 +332,8 @@
   <div class="foot"><button type="button" class="chip" id="disconnect">Disconnect</button></div>
 </aside>
 
-<button type="button" class="iconbtn" id="share"><span id="shareArt" class="art"></span><span id="shareLabel" class="lbl">Share</span></button>
-<!-- About: a quiet link at the foot of the page, level with the Share and Sound labels. -->
-<div class="bottomLinks"><button type="button" class="linkbtn" id="historyBtn">History</button><button type="button" class="linkbtn" id="aboutBtn" aria-haspopup="dialog">About</button><a id="contractLink" class="linkbtn" target="_blank" rel="noreferrer">Contract ↗</a></div>
 <dialog id="about" aria-labelledby="aboutTitle">
-  <h2 id="aboutTitle" class="title">Flip It</h2>
+  <h2 id="aboutTitle" class="title" tabindex="-1" autofocus>Flip It</h2>
   <p>Flip It is a self-sustaining coin-flip primitive on NEAR testnet. No tilted odds, just luck and fun. Each bet uses a future drand round verified on NEAR. Network fees apply.</p>
   <p>Win, and you get double your stake back before a 1% winning payout fee. Lose, and your stake goes into the bank, which pays future winners.</p>
   <p>The 1% fee on winning payouts stays in the bank, keeping its balance playable for the players who come next. Your net return is 1.98×, including your original stake. Older bets keep their original 2× payout.</p>
@@ -292,7 +341,6 @@
   <p class="dim">Built for the NEAR hackathon, for the fun of it.</p>
   <button type="button" class="chip" id="aboutClose">Close</button>
 </dialog>
-<button type="button" class="iconbtn" id="sound"><span id="soundArt" class="art"></span><span id="soundLabel" class="lbl"></span></button>
 
 <main>
   <div id="stage"></div>
@@ -354,6 +402,11 @@
   </section>
   <div class="receiptActions"><button class="chip" id="retryClaim" type="button" hidden>Claim payout</button><button class="linkbtn" id="verify" type="button" hidden>Verify proof</button><a class="linkbtn" id="receiptLink" hidden>Shareable receipt ↗</a></div>
 </main>
+<footer class="appFooter">
+  <button type="button" class="iconbtn" id="share"><span id="shareArt" class="art"></span><span id="shareLabel" class="lbl">Share</span></button>
+  <nav class="bottomLinks" aria-label="Game links"><button type="button" class="linkbtn" id="historyBtn">History</button><button type="button" class="linkbtn" id="aboutBtn" aria-haspopup="dialog">About</button><a id="contractLink" class="linkbtn" target="_blank" rel="noreferrer">Contract ↗</a></nav>
+  <button type="button" class="iconbtn" id="sound"><span id="soundArt" class="art"></span><span id="soundLabel" class="lbl"></span></button>
+</footer>
 <dialog id="historyDialog" aria-labelledby="historyTitle">
   <h2 class="title" id="historyTitle">Flip history</h2>
   <div class="historyTools"><button type="button" class="chip" id="historyAll" aria-pressed="true">All bets</button><button type="button" class="chip" id="historyMine" aria-pressed="false">My bets</button><button type="button" class="linkbtn" id="historyRefresh">Refresh</button></div>
